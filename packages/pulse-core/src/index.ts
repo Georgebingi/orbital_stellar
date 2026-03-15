@@ -1,6 +1,7 @@
 // packages/pulse-core/src/index.ts
 import { Horizon } from "@stellar/stellar-sdk";
 import { Watcher } from "./Watcher.js";
+export { Watcher } from "./Watcher.js";
 
 // --- Types ---
 export type Network = "mainnet" | "testnet";
