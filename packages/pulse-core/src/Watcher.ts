@@ -5,6 +5,7 @@ import type { NormalizedEvent } from "./index.js";
 export class Watcher extends EventEmitter {
   readonly address: string;
   private _stopped: boolean = false;
+  private stopHandlers: Set<() => void> = new Set();
 
   constructor(address: string) {
     super();
@@ -21,8 +22,29 @@ export class Watcher extends EventEmitter {
     return super.emit(eventType, event);
   }
 
+  get stopped(): boolean {
+    return this._stopped;
+  }
+
+  addStopHandler(handler: () => void): () => void {
+    if (this._stopped) {
+      handler();
+      return () => {};
+    }
+
+    this.stopHandlers.add(handler);
+    return () => {
+      this.stopHandlers.delete(handler);
+    };
+  }
+
   stop(): void {
+    if (this._stopped) return;
     this._stopped = true;
+    for (const handler of this.stopHandlers) {
+      handler();
+    }
+    this.stopHandlers.clear();
     this.removeAllListeners();
   }
 }
