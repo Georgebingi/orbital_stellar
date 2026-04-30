@@ -56,9 +56,23 @@ export class EventEngine {
    * @param config - The core configuration for the engine.
    */
   constructor(config: CoreConfig) {
-    const horizonUrl = HORIZON_URLS[config.network];
-    if (!horizonUrl) {
-      throw new UnknownNetworkError(config.network);
+    let horizonUrl: string;
+    if (config.horizonUrl !== undefined) {
+      try {
+        const parsed = new URL(config.horizonUrl);
+        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+          throw new Error("must be an http or https URL");
+        }
+      } catch (err) {
+        throw new Error(`Invalid horizonUrl: ${(err as Error).message}`);
+      }
+      horizonUrl = config.horizonUrl;
+    } else {
+      const fromNetwork = HORIZON_URLS[config.network];
+      if (!fromNetwork) {
+        throw new UnknownNetworkError(config.network);
+      }
+      horizonUrl = fromNetwork;
     }
     this.server = new Horizon.Server(horizonUrl);
     this.reconnectConfig = {

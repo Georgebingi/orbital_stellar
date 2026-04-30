@@ -134,6 +134,8 @@ export type ReconnectConfig = {
 export type CoreConfig = {
   /** The Stellar network to connect to. */
   network: Network;
+  /** Optional override for the Horizon server URL. When set, `network` is still used for chain context but the connection is made to this URL. Useful for private nodes, regional mirrors, or futurenet. */
+  horizonUrl?: string;
   /** Optional reconnection configuration. */
   reconnect?: ReconnectConfig;
   logger?: {
