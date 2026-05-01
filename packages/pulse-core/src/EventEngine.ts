@@ -1,6 +1,8 @@
 import { Horizon } from "@stellar/stellar-sdk";
 import { Watcher } from "./Watcher.js";
 import type {
+  AccountCreatedEvent,
+  AccountEventType,
   AccountMergeEvent,
   AccountOptionsChanges,
   AccountOptionsEvent,
@@ -23,6 +25,7 @@ type PendingPaymentEvent = Omit<PaymentEvent, "type"> & { type: "unknown" };
 type NormalizedEventOrPending =
   | PendingPaymentEvent
   | AccountOptionsEvent
+  | AccountCreatedEvent
   | TrustlineEvent
   | AccountMergeEvent;
 
@@ -311,6 +314,10 @@ export class EventEngine {
       return this.normalizeSetOptions(r, record);
     }
 
+    if (r.type === "create_account") {
+      return this.normalizeCreateAccount(r, record);
+    }
+
     if (r.type === "change_trust") {
       return this.normalizeChangeTrust(r, record);
     }
@@ -326,6 +333,28 @@ export class EventEngine {
     }
 
     return null;
+  }
+
+  private normalizeCreateAccount(
+    r: Record<string, unknown>,
+    raw: unknown
+  ): AccountCreatedEvent | null {
+    if (
+      typeof r.funder !== "string" ||
+      typeof r.account !== "string" ||
+      typeof r.starting_balance !== "string" ||
+      typeof r.created_at !== "string"
+    ) {
+      return null;
+    }
+    return {
+      type: "account.created",
+      funder: r.funder,
+      account: r.account,
+      starting_balance: r.starting_balance,
+      timestamp: r.created_at,
+      raw,
+    };
   }
 
   private normalizeChangeTrust(
@@ -436,6 +465,21 @@ export class EventEngine {
   }
 
   private route(event: NormalizedEventOrPending): void {
+    if (event.type === "account.created") {
+      const funderWatcher = this.registry.get(event.funder);
+      if (funderWatcher && this.passesFilter(event.funder, event)) {
+        funderWatcher.emit("account.created", event);
+        funderWatcher.emit("*", event);
+      }
+
+      const accountWatcher = this.registry.get(event.account);
+      if (accountWatcher && event.account !== event.funder && this.passesFilter(event.account, event)) {
+        accountWatcher.emit("account.created", event);
+        accountWatcher.emit("*", event);
+      }
+      return;
+    }
+
     if (event.type === "account.options_changed") {
       const watcher = this.registry.get(event.source);
       if (watcher && this.passesFilter(event.source, event)) {
