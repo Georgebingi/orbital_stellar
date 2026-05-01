@@ -42,6 +42,7 @@ vi.mock("@stellar/stellar-sdk", () => {
 });
 
 import { EventEngine } from "../src/EventEngine.js";
+import { Watcher } from "../src/Watcher.js";
 
 function latestStream(): MockStreamInstance {
   const stream = streamInstances.at(-1);
@@ -231,6 +232,28 @@ describe("pulse-core EventEngine", () => {
       });
       expect(serverUrls[0]).toBe("https://horizon-testnet.stellar.org");
     });
+  });
+
+  it("warns when registering listeners after a watcher is stopped", () => {
+    const warn = vi.fn();
+    const watcher = new Watcher("GABC", { logger: { warn } });
+
+    watcher.stop();
+    watcher.on("payment.received", vi.fn());
+
+    expect(warn).toHaveBeenCalledWith(
+      '[pulse-core] Watcher.on("payment.received") called after stop() for address GABC. Listener was not registered.'
+    );
+  });
+
+  it("throws in strict mode when registering listeners after stop", () => {
+    const watcher = new Watcher("GABC", { strictStoppedListeners: true });
+
+    watcher.stop();
+
+    expect(() => watcher.on("payment.received", vi.fn())).toThrow(
+      '[pulse-core] Watcher.on("payment.received") called after stop() for address GABC. Listener was not registered.'
+    );
   });
 
   it("guards start() so duplicate live streams are not opened", () => {
