@@ -11,6 +11,7 @@ import type {
   PaymentEvent,
   PaymentEventType,
   ReconnectConfig,
+  SubscribeOptions,
   TrustlineEvent,
   TrustlineEventType,
   WatcherNotification,
@@ -58,6 +59,7 @@ export class EventEngine {
   private pendingReconnectSuccessAttempt: number | null = null;
   private readonly reconnectConfig: Required<ReconnectConfig>;
   private isRunning = false;
+  private filters: Map<string, (event: NormalizedEvent) => boolean> = new Map();
   private log: Required<NonNullable<CoreConfig["logger"]>>;
   private lastEventAt: string | null = null;
 
@@ -96,17 +98,27 @@ export class EventEngine {
    * Subscribes to events for a given Stellar address.
    * Returns an existing Watcher if one already exists for the address.
    * @param address - The Stellar address to watch.
+   * @param options - Optional subscription options, including a filter predicate.
    * @returns The Watcher instance for the address.
    */
-  subscribe(address: string): Watcher {
+  subscribe(address: string, options?: SubscribeOptions): Watcher {
     const existingWatcher = this.registry.get(address);
     if (existingWatcher) {
+      if (options?.filter) {
+        this.log.warn(
+          `[pulse-core] subscribe() called for address ${address} which already has an active watcher — filter option ignored.`
+        );
+      }
       return existingWatcher;
     }
 
     const watcher = new Watcher(address);
+    if (options?.filter) {
+      this.filters.set(address, options.filter);
+    }
     watcher.addStopHandler(() => {
       this.registry.delete(address);
+      this.filters.delete(address);
     });
     this.registry.set(address, watcher);
     return watcher;
@@ -408,10 +420,25 @@ export class EventEngine {
     };
   }
 
+  private passesFilter(address: string, event: NormalizedEvent): boolean {
+    const filter = this.filters.get(address);
+    if (!filter) return true;
+
+    try {
+      return filter(event);
+    } catch (err) {
+      this.log.warn(
+        `[pulse-core] subscribe() filter threw for address ${address} — treating as reject.`,
+        err
+      );
+      return false;
+    }
+  }
+
   private route(event: NormalizedEventOrPending): void {
     if (event.type === "account.options_changed") {
       const watcher = this.registry.get(event.source);
-      if (watcher) {
+      if (watcher && this.passesFilter(event.source, event)) {
         watcher.emit("account.options_changed", event);
         watcher.emit("*", event);
       }
@@ -424,7 +451,7 @@ export class EventEngine {
       event.type === "trustline.updated"
     ) {
       const watcher = this.registry.get(event.account);
-      if (watcher) {
+      if (watcher && this.passesFilter(event.account, event)) {
         watcher.emit(event.type, event);
         watcher.emit("*", event);
       }
@@ -433,13 +460,13 @@ export class EventEngine {
 
     if (event.type === "account.merged") {
       const sourceWatcher = this.registry.get(event.source);
-      if (sourceWatcher) {
+      if (sourceWatcher && this.passesFilter(event.source, event)) {
         sourceWatcher.emit("account.merged", event);
         sourceWatcher.emit("*", event);
       }
 
       const destinationWatcher = this.registry.get(event.destination);
-      if (destinationWatcher) {
+      if (destinationWatcher && this.passesFilter(event.destination, event)) {
         destinationWatcher.emit("account.merged", event);
         destinationWatcher.emit("*", event);
       }
@@ -454,28 +481,30 @@ export class EventEngine {
       const watcher = this.registry.get(event.to);
       if (watcher) {
         const selfPayment = this.withResolvedType(event, "payment.self");
-        watcher.emit("payment.self", selfPayment);
-        watcher.emit("*", selfPayment);
+        if (this.passesFilter(event.to, selfPayment)) {
+          watcher.emit("payment.self", selfPayment);
+          watcher.emit("*", selfPayment);
+        }
       }
       return;
     }
 
     const toWatcher = this.registry.get(event.to);
     if (toWatcher) {
-      toWatcher.emit(
-        "payment.received",
-        this.withResolvedType(event, "payment.received")
-      );
-      toWatcher.emit("*", this.withResolvedType(event, "payment.received"));
+      const receivedEvent = this.withResolvedType(event, "payment.received");
+      if (this.passesFilter(event.to, receivedEvent)) {
+        toWatcher.emit("payment.received", receivedEvent);
+        toWatcher.emit("*", receivedEvent);
+      }
     }
 
     const fromWatcher = this.registry.get(event.from);
     if (fromWatcher) {
-      fromWatcher.emit(
-        "payment.sent",
-        this.withResolvedType(event, "payment.sent")
-      );
-      fromWatcher.emit("*", this.withResolvedType(event, "payment.sent"));
+      const sentEvent = this.withResolvedType(event, "payment.sent");
+      if (this.passesFilter(event.from, sentEvent)) {
+        fromWatcher.emit("payment.sent", sentEvent);
+        fromWatcher.emit("*", sentEvent);
+      }
     }
   }
 
