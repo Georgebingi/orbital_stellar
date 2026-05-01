@@ -9,6 +9,8 @@ import { logger } from "./logger.js";
 
 // --- Bootstrap ---
 
+const activeSSEConnections = new Set<Response>();
+
 const engine = new EventEngine({ network: config.NETWORK, logger });
 engine.start();
 logger.info({ network: config.NETWORK }, "Event engine started");
@@ -33,7 +35,7 @@ app.use((req, res, next) => {
 });
 
 app.use(express.json({ limit: "16kb" }));
-app.use("/v1", createRoutes(registry, engine));
+app.use("/v1", createRoutes(registry, engine, activeSSEConnections));
 
 app.get("/health", (_req: Request, res: Response) => {
   res.json({ status: "ok", network: config.NETWORK });
@@ -50,18 +52,58 @@ const SHUTDOWN_TIMEOUT_MS = 5000;
 function shutdown(signal: string): void {
   logger.info({ signal }, "Shutting down");
 
-  const forceExit = setTimeout(() => {
-    logger.error("Graceful shutdown timed out, forcing exit.");
-    process.exit(1);
-  }, SHUTDOWN_TIMEOUT_MS) as unknown as NodeJS.Timeout;
-  forceExit.unref();
+  const connections = Array.from(activeSSEConnections);
+  logger.info({ count: connections.length }, "Notifying SSE clients about shutdown");
 
-  engine.stop();
+  let called = false;
+  function proceedWithShutdown(): void {
+    if (called) return;
+    called = true;
 
-  server.close(() => {
-    logger.info("HTTP server closed. Exiting.");
-    process.exit(0);
-  });
+    const forceExit = setTimeout(() => {
+      logger.error("Graceful shutdown timed out, forcing exit.");
+      process.exit(1);
+    }, SHUTDOWN_TIMEOUT_MS) as unknown as NodeJS.Timeout;
+    forceExit.unref();
+
+    engine.stop();
+
+    server.close(() => {
+      logger.info("HTTP server closed. Exiting.");
+      process.exit(0);
+    });
+  }
+
+  if (connections.length === 0) {
+    proceedWithShutdown();
+    return;
+  }
+
+  let completed = 0;
+  for (const res of connections) {
+    try {
+      if (!res.destroyed && !res.writableEnded) {
+        res.write("event: shutdown\ndata: {}\n\n");
+        res.end(() => {
+          activeSSEConnections.delete(res);
+          if (++completed === connections.length) proceedWithShutdown();
+        });
+      } else {
+        activeSSEConnections.delete(res);
+        if (++completed === connections.length) proceedWithShutdown();
+      }
+    } catch (err) {
+      logger.error({ err }, "Error sending shutdown event to SSE client");
+      activeSSEConnections.delete(res);
+      if (++completed === connections.length) proceedWithShutdown();
+    }
+  }
+
+  // Fallback: proceed if any connections don't respond within 2s
+  setTimeout(() => {
+    activeSSEConnections.clear();
+    proceedWithShutdown();
+  }, 2000).unref();
 }
 
 process.on("SIGTERM", () => shutdown("SIGTERM"));
